@@ -58,6 +58,10 @@ export default function App() {
   const [isMonitorEnabled, setIsMonitorEnabled] = useState<boolean>(engine.getMonitorEnabled());
   const [voiceEffect, setVoiceEffect] = useState<string>(engine.getVoiceEffect());
 
+  // Real-time computer physical audio devices
+  const [availableInputs, setAvailableInputs] = useState<MediaDeviceInfo[]>([]);
+  const [availableOutputs, setAvailableOutputs] = useState<MediaDeviceInfo[]>([]);
+
   // Real-time telemetry values
   const [cpuUsage, setCpuUsage] = useState<number>(12);
   const [memoryUsage, setMemoryUsage] = useState<number>(45);
@@ -68,6 +72,39 @@ export default function App() {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showHelp, setShowHelp] = useState<boolean>(false);
   const [showToast, setShowToast] = useState<string | null>(null);
+
+  // Helper to refresh devices list
+  const refreshDeviceList = async (requestPermission = false) => {
+    try {
+      if (requestPermission) {
+        // Run a fast permission mic request so browser displays real labels/names
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter((d) => d.kind === 'audioinput');
+      const outputs = devices.filter((d) => d.kind === 'audiooutput');
+      setAvailableInputs(inputs);
+      setAvailableOutputs(outputs);
+    } catch (err) {
+      console.warn('Real computer device enumeration caution:', err);
+    }
+  };
+
+  // Discover devices on startup
+  useEffect(() => {
+    refreshDeviceList(false);
+  }, []);
+
+  // Sync labels once engine becomes active and permission is obtained
+  useEffect(() => {
+    if (isActive) {
+      const timer = setTimeout(() => {
+        refreshDeviceList(false);
+      }, 700);
+      return () => clearTimeout(timer);
+    }
+  }, [isActive]);
 
   // Synchronize audio controls to engine when they update
   useEffect(() => {
@@ -182,20 +219,41 @@ export default function App() {
     if (isActive) {
       const success = await engine.setSource(val);
       if (success) {
-        triggerToast(`音源线路已切换：${getDeviceLabel(val)}`);
+        // Find label after state updates or retrieve label directly
+        const label = val === 'synth-loop' ? 'Rhythm 律动吉他发生器' :
+                      val === 'heavy-metal' ? '重载熔火金属电吉他' :
+                      val === 'sine-wave' ? '正规 440Hz 实验室正弦波' :
+                      val === 'microphone' ? '默认物理拾音麦克风' :
+                      (availableInputs.find(i => i.deviceId === val)?.label || `外部通道: ${val.substring(0, 8)}`);
+        triggerToast(`音源线路已切换：${label}`);
       } else {
         triggerToast(`通道切换失败！回滚至：${getDeviceLabel(inputDevice)}`);
       }
     }
   };
 
+  // Change active output device target
+  const handleOutputDeviceChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setOutputDevice(val);
+    await engine.setOutputDevice(val);
+    if (isActive) {
+      const label = val === 'default' ? '系统默认播放扬声器' : 
+                    (availableOutputs.find(o => o.deviceId === val)?.label || `外部接口: ${val.substring(0, 8)}`);
+      triggerToast(`🔊 物理输出通道已变更为: ${label}`);
+    }
+  };
+
   const getDeviceLabel = (val: string) => {
     switch (val) {
-      case 'microphone': return '物理拾音麦克风';
       case 'synth-loop': return 'Rhythm 律动吉他发生器';
       case 'heavy-metal': return '重载熔火金属电吉他';
       case 'sine-wave': return '正规 440Hz 实验室正弦波';
-      default: return val;
+      case 'microphone': return '默认物理拾音麦克风';
+      default: {
+        const found = availableInputs.find(i => i.deviceId === val);
+        return found && found.label ? found.label : `物理输入: ${val.substring(0, 8)}...`;
+      }
     }
   };
 
@@ -670,10 +728,24 @@ export default function App() {
                 {/* Audio Route panel (8 columns) */}
                 <section className="lg:col-span-8 bg-white border border-pink-100 rounded-xl p-5 flex flex-col justify-between shadow-xs animate-fade-in" id="audio-routing-panel">
                   <div>
-                    <h3 className="text-slate-850 font-bold text-sm mb-4 flex items-center gap-2">
-                      <Compass className="w-4 h-4 text-[#ec4899] animate-spin-slow" />
-                      音频路由配置 (Port Routing)
-                    </h3>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-slate-850 font-bold text-sm flex items-center gap-2">
+                        <Compass className="w-4 h-4 text-[#ec4899] animate-spin-slow" />
+                        音频路由配置 (Port Routing)
+                      </h3>
+                      <button
+                        id="btn-scan-devices"
+                        type="button"
+                        onClick={() => {
+                          refreshDeviceList(true);
+                          triggerToast('🔍 正在重新检索电脑音频物理接口并激活命名标签...');
+                        }}
+                        className="text-[10.5px] px-3 py-1 bg-pink-50 hover:bg-pink-100 text-[#db2777] border border-pink-200 rounded-lg transition font-bold cursor-pointer shadow-xs whitespace-nowrap"
+                        title="主动申请浏览器权限以获取完整的声卡与麦克风设备名称"
+                      >
+                        🔄 扫描/刷新电脑设备
+                      </button>
+                    </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                       {/* Input Selector Dropdown */}
@@ -686,40 +758,52 @@ export default function App() {
                             id="input-source-device"
                             value={inputDevice}
                             onChange={handleInputDeviceChange}
-                            className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-800 font-sans cursor-pointer focus:outline-none focus:border-pink-300 appearance-none shadow-xs"
+                            className="w-full bg-white border border-slate-200 rounded-lg p-2.5 pr-8 text-xs text-slate-800 font-sans cursor-pointer focus:outline-none focus:border-pink-300 appearance-none shadow-xs"
                           >
-                            <option value="synth-loop">测试律动吉他模拟器 (Synth Rhythm Loop)</option>
-                            <option value="heavy-metal">重载熔火金属电吉他 (Heavy Distortion Rock)</option>
-                            <option value="microphone">麦克风 (Realtek High Definition Audio)</option>
-                            <option value="sine-wave">标准440Hz正弦波校验器 (Sine Wave Lab)</option>
+                            <optgroup label="✨ 内置演示声音 (Demonstration Loop/Synth)">
+                              <option value="synth-loop">测试律动吉他模拟器 (Synth Rhythm Loop)</option>
+                              <option value="heavy-metal">重载熔火金属电吉他 (Heavy Distortion Rock)</option>
+                              <option value="sine-wave">标准440Hz正弦波校验器 (Sine Wave Lab)</option>
+                            </optgroup>
+                            <optgroup label="🎤 物理麦克风与硬件声卡 (System Mic Inputs)">
+                              <option value="microphone">系统默认拾音麦克风 (System Default Input)</option>
+                              {availableInputs.map((device, index) => (
+                                <option key={device.deviceId || `in-${index}`} value={device.deviceId}>
+                                  🎤 {device.label || `音频输入设备 #${index + 1}`}
+                                </option>
+                              ))}
+                            </optgroup>
                           </select>
                           <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[9px] pointer-events-none font-mono">▼</span>
                         </div>
                         <p className="text-[10px] text-slate-450 leading-normal">
-                          * 若声卡支持ASIO，推荐使用“物理麦克风”并开启独占。
+                          * 点击右上角“扫描设备”可更新并加载你电脑插上的有线/无线麦克风。
                         </p>
                       </div>
 
                       {/* Output Selector Dropdown */}
                       <div className="space-y-1.5 font-sans">
-                        <label htmlFor="output-target-device" className="text-slate-500 text-[11px] font-mono tracking-wider block font-bold">
-                          输出设备 (VIRTUAL OUTPUT TARGET)
+                        <label htmlFor="output-target-device" className="text-[#db2777] text-[11px] font-mono tracking-wider block font-bold">
+                          输出播放设备 (SPEAKERS / PHONES)
                         </label>
                         <div className="relative">
                           <select
                             id="output-target-device"
                             value={outputDevice}
-                            onChange={(e) => setOutputDevice(e.target.value)}
-                            className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-850 font-sans cursor-pointer focus:outline-none focus:border-pink-300 appearance-none shadow-xs"
+                            onChange={handleOutputDeviceChange}
+                            className="w-full bg-white border border-slate-200 rounded-lg p-2.5 pr-8 text-xs text-slate-850 font-sans cursor-pointer focus:outline-none focus:border-pink-300 appearance-none shadow-xs"
                           >
-                            <option value="default">默认播放设备 (System Default Speakers)</option>
-                            <option value="voicemeeter">VoiceMeeter Input (VB-Audio Virtual Cable)</option>
-                            <option value="cable-a">Virtual AUX Cable-A (ASIO Channel Map)</option>
+                            <option value="default">默认系统播放设备 (System Default Speakers)</option>
+                            {availableOutputs.map((device, index) => (
+                              <option key={device.deviceId || `out-${index}`} value={device.deviceId}>
+                                🔊 {device.label || `音频播放输出 #${index + 1}`}
+                              </option>
+                            ))}
                           </select>
                           <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-[9px] pointer-events-none font-mono">▼</span>
                         </div>
                         <p className="text-[10px] text-slate-450 leading-normal">
-                          * 绑定至 VoiceMeeter 声卡在各大聊天社交/直播中传送狂爆音浪。
+                          * 本机输出定位。若有虚拟声卡 (VoiceMeeter/VB-Audio) 可在此绑定。
                         </p>
                       </div>
                     </div>

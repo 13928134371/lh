@@ -231,6 +231,7 @@ export class AudioEngine {
 
   // Configuration state
   private activeSourceType: string = 'synth-loop'; // 'microphone' | 'synth-loop' | 'heavy-metal' | 'sine-wave'
+  private currentOutputDeviceId: string = 'default';
   private controls: AudioControls = {
     gain: 450,
     distortion: 85,
@@ -267,6 +268,15 @@ export class AudioEngine {
       this.activeSourceType = sourceType;
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.ctx = new AudioCtxClass();
+
+      // Apply output device if supported and set
+      if (typeof (this.ctx as any).setSinkId === 'function' && this.currentOutputDeviceId !== 'default') {
+        try {
+          await (this.ctx as any).setSinkId(this.currentOutputDeviceId);
+        } catch (e) {
+          console.warn('Initial setSinkId failed on startup:', e);
+        }
+      }
 
       // Create Analyser nodes
       this.inputAnalyser = this.ctx.createAnalyser();
@@ -466,14 +476,19 @@ export class AudioEngine {
     this.stopSynthTicks();
     this.closeMicStream();
 
-    if (this.activeSourceType === 'microphone') {
+    const isMicSelected = this.activeSourceType !== 'synth-loop' && this.activeSourceType !== 'heavy-metal' && this.activeSourceType !== 'sine-wave';
+    if (isMicSelected) {
       try {
+        const audioConstraints: any = {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        };
+        if (this.activeSourceType !== 'microphone') {
+          audioConstraints.deviceId = { exact: this.activeSourceType };
+        }
         this.micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
+          audio: audioConstraints
         });
         this.sourceNode = this.ctx.createMediaStreamSource(this.micStream);
         this.sourceNode.connect(this.inputAnalyser);
@@ -768,6 +783,24 @@ export class AudioEngine {
 
   public getMonitorEnabled(): boolean {
     return this.isMonitorEnabled;
+  }
+
+  public async setOutputDevice(deviceId: string): Promise<boolean> {
+    this.currentOutputDeviceId = deviceId;
+    if (this.ctx && typeof (this.ctx as any).setSinkId === 'function') {
+      try {
+        await (this.ctx as any).setSinkId(deviceId === 'default' ? '' : deviceId);
+        return true;
+      } catch (err) {
+        console.error('Failed to set output audio device sink ID:', err);
+        return false;
+      }
+    }
+    return false;
+  }
+
+  public getOutputDevice(): string {
+    return this.currentOutputDeviceId;
   }
 
   public setVoiceEffect(effect: string) {
