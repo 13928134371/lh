@@ -1,0 +1,8 @@
+{
+  "name": "极度炸麦 Audio Panel",
+  "description": "极度炸麦控制台 - 实时麦克风音质调校、大增益功放失真模拟、低音增强及声音美化全能工具箱。",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
