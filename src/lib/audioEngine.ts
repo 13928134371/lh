@@ -230,7 +230,7 @@ export class AudioEngine {
   private synthGain: GainNode | null = null;
 
   // Configuration state
-  private activeSourceType: string = 'synth-loop'; // 'microphone' | 'synth-loop' | 'heavy-metal' | 'sine-wave'
+  private activeSourceType: string = 'microphone'; // default to real system mic inputs
   private currentOutputDeviceId: string = 'default';
   private controls: AudioControls = {
     gain: 450,
@@ -256,7 +256,7 @@ export class AudioEngine {
     return this.activeSourceType;
   }
 
-  public async start(sourceType: string = 'synth-loop'): Promise<boolean> {
+  public async start(sourceType: string = 'microphone'): Promise<boolean> {
     if (this.isRunning) {
       if (sourceType !== this.activeSourceType) {
         await this.setSource(sourceType);
@@ -399,7 +399,7 @@ export class AudioEngine {
     }
 
     try {
-      // Clear any remaining nodes if rebuilding
+      // Clear any remaining nodes if rebuilding to prevent double-connections
       this.screechGain.disconnect();
       this.feedbackGain.disconnect();
       this.voiceChangerInputGain.disconnect();
@@ -408,50 +408,64 @@ export class AudioEngine {
       this.voiceFilter2.disconnect();
       this.voiceTremoloGain.disconnect();
 
+      this.gainNode.disconnect();
+      this.distortionNode.disconnect();
+      this.bassFilter.disconnect();
+      this.screechFilter.disconnect();
+      this.delayNode.disconnect();
+      this.ringModDryGain.disconnect();
+      this.ringModWetGain.disconnect();
+      this.ringModGain.disconnect();
+      this.outputAnalyser.disconnect();
+
       // 1. Source -> Input Analyser -> Voice Changer Input Gain
       this.inputAnalyser.connect(this.voiceChangerInputGain);
 
-      // 1b. Route voice effect dynamically
+      // Route based on mutual exclusivity
       if (this.currentVoiceEffect === 'none') {
+        // --- MODE A: Standard / 炸麦 (Distortion Blast mode - Bypass voice changing completely) ---
         this.voiceChangerInputGain.connect(this.gainNode);
+
+        // Gain -> Distortion (WaveShaper)
+        this.gainNode.connect(this.distortionNode);
+
+        // Distortion -> Bass low shelf filter
+        this.distortionNode.connect(this.bassFilter);
+
+        // Bass Filter -> Screech filtering
+        this.bassFilter.connect(this.screechFilter);
+
+        // Connect the synthetic screech sound parallel generator into Screech filter to simulate screech
+        this.screechGain.connect(this.screechFilter);
+
+        // Screech Filter splits into dry delay path and delayed path
+        this.screechFilter.connect(this.delayNode); // to feedback delay
+
+        // Also connect delay output back to main stream
+        this.delayNode.connect(this.ringModDryGain); // Delay feeds forward to Ring Mod dry
+        this.screechFilter.connect(this.ringModDryGain); // Original feeds forward to Ring Mod dry
+
+        // Ring modulation: Carrier multiplied by the dry gain output
+        this.ringModDryGain.connect(this.ringModGain);
+        this.ringModCarrier.connect(this.ringModGain.gain); // multiplying by carrier oscillator
+
+        // Wet path
+        this.ringModGain.connect(this.ringModWetGain);
+
+        // Mix dry and wet signals into output analyser
+        this.ringModDryGain.connect(this.outputAnalyser);
+        this.ringModWetGain.connect(this.outputAnalyser);
+
       } else {
+        // --- MODE B: 变声 (Vocal Morphing mode - Completely bypass heavy blowout distortion) ---
         this.voiceChangerInputGain.connect(this.pitchShifter.input);
         this.pitchShifter.output.connect(this.voiceFilter1);
         this.voiceFilter1.connect(this.voiceFilter2);
         this.voiceFilter2.connect(this.voiceTremoloGain);
-        this.voiceTremoloGain.connect(this.gainNode);
+
+        // Bypass the entire distortion / screech / decay feedback pipeline and route straight to output
+        this.voiceTremoloGain.connect(this.outputAnalyser);
       }
-
-      // 2. Gain -> Distortion (WaveShaper)
-      this.gainNode.connect(this.distortionNode);
-
-      // 3. Distortion -> Bass low shelf filter
-      this.distortionNode.connect(this.bassFilter);
-
-      // 4. Bass Filter -> Screech filtering
-      this.bassFilter.connect(this.screechFilter);
-
-      // Connect the synthetic screech sound parallel generator into Screech filter to simulate screech
-      this.screechGain.connect(this.screechFilter);
-
-      // 5. Screech Filter splits into dry delay path and delayed path
-      this.screechFilter.connect(this.delayNode); // to feedback delay
-
-      // Also connect delay output back to main stream
-      this.delayNode.connect(this.ringModDryGain); // Delay feeds forward to Ring Mod dry
-      this.screechFilter.connect(this.ringModDryGain); // Original feeds forward to Ring Mod dry
-
-      // 6. Ring modulation: Carrier multiplied by the dry gain output
-      // We route some signal to Ring Modulation multiplication node
-      this.ringModDryGain.connect(this.ringModGain);
-      this.ringModCarrier.connect(this.ringModGain.gain); // multiplying by carrier oscillator
-
-      // Wet path
-      this.ringModGain.connect(this.ringModWetGain);
-
-      // Mix dry and wet signals into output analyser
-      this.ringModDryGain.connect(this.outputAnalyser);
-      this.ringModWetGain.connect(this.outputAnalyser);
 
       // Output Analyser -> Master Gain -> Monitor Gain -> Destination
       this.outputAnalyser.connect(this.outputMasterGain);

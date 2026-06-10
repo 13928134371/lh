@@ -52,7 +52,7 @@ export default function App() {
 
   // System states
   const [isActive, setIsActive] = useState<boolean>(false);
-  const [inputDevice, setInputDevice] = useState<string>('synth-loop');
+  const [inputDevice, setInputDevice] = useState<string>('microphone');
   const [outputDevice, setOutputDevice] = useState<string>('default');
   const [isNuked, setIsNuked] = useState<boolean>(false);
   const [isMonitorEnabled, setIsMonitorEnabled] = useState<boolean>(engine.getMonitorEnabled());
@@ -189,7 +189,26 @@ export default function App() {
       elderly: '沧桑老人',
       ceo: '磁性总裁'
     };
-    triggerToast(`🎭 变声相型已切为：${labels[effect] || effect}`);
+
+    if (effect !== 'none') {
+      // Clean bypass values to fully disable blasting distortion and screech
+      const bypassedCtrls = {
+        gain: 100, // Safe 1x nominal gain (100%)
+        distortion: 0,
+        bass: 0,
+        screech: 0,
+        feedback: 0,
+        ringMod: 0
+      };
+      setControls(bypassedCtrls);
+      engine.setControls(bypassedCtrls);
+      if (isNuked) {
+        setIsNuked(false);
+      }
+      triggerToast(`🎭 激活变声变相【${labels[effect] || effect}】: 炸麦失真效果已被旁路遮蔽`);
+    } else {
+      triggerToast(`🎭 切换至【${labels[effect] || effect}】: 炸麦与失真控制已解锁`);
+    }
   };
 
   // Safe toast notifier
@@ -202,6 +221,12 @@ export default function App() {
 
   // Target single slider mutations helper
   const handleSliderChange = (key: keyof AudioControls, val: number) => {
+    if (voiceEffect !== 'none') {
+      // If sliders are updated, shutdown any active voice changer (mutually exclusive)
+      setVoiceEffect('none');
+      engine.setVoiceEffect('none');
+      triggerToast('💥 启动失真炸麦: 变声器已自动旁路并恢复原音');
+    }
     setControls((prev) => {
       const next = { ...prev, [key]: val };
       if (isNuked) {
@@ -212,18 +237,14 @@ export default function App() {
     });
   };
 
-  // Change active input device source (mic, metal guitar loop, or synthesizers)
+  // Change active input device source (mic, etc.)
   const handleInputDeviceChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     setInputDevice(val);
     if (isActive) {
       const success = await engine.setSource(val);
       if (success) {
-        // Find label after state updates or retrieve label directly
-        const label = val === 'synth-loop' ? 'Rhythm 律动吉他发生器' :
-                      val === 'heavy-metal' ? '重载熔火金属电吉他' :
-                      val === 'sine-wave' ? '正规 440Hz 实验室正弦波' :
-                      val === 'microphone' ? '默认物理拾音麦克风' :
+        const label = val === 'microphone' ? '默认物理拾音麦克风' :
                       (availableInputs.find(i => i.deviceId === val)?.label || `外部通道: ${val.substring(0, 8)}`);
         triggerToast(`音源线路已切换：${label}`);
       } else {
@@ -246,9 +267,6 @@ export default function App() {
 
   const getDeviceLabel = (val: string) => {
     switch (val) {
-      case 'synth-loop': return 'Rhythm 律动吉他发生器';
-      case 'heavy-metal': return '重载熔火金属电吉他';
-      case 'sine-wave': return '正规 440Hz 实验室正弦波';
       case 'microphone': return '默认物理拾音麦克风';
       default: {
         const found = availableInputs.find(i => i.deviceId === val);
@@ -259,9 +277,13 @@ export default function App() {
 
   // Custom presets applied directly
   const handleApplyPreset = (newControls: AudioControls) => {
+    if (voiceEffect !== 'none') {
+      setVoiceEffect('none');
+      engine.setVoiceEffect('none');
+    }
     setControls(newControls);
     if (isNuked) setIsNuked(false);
-    triggerToast('DSP 级调校预设已同步生效！');
+    triggerToast('DSP 级调校预设已同步生效！变声器已被自动关闭。');
   };
 
   // DANGER ZONE : NUKE CONTROL
@@ -581,7 +603,8 @@ export default function App() {
           {currentTab === 'control' && (
             <div className="space-y-6" id="tab-controls-view">
               {/* Core 6 Audio control sliders grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="sliders-grid">
+              <div className="relative" id="sliders-container-outer">
+                <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 transition-all duration-300 ${voiceEffect !== 'none' ? 'opacity-30 pointer-events-none filter blur-[1.5px]' : ''}`} id="sliders-grid">
                 
                 {/* 1. GAIN Control */}
                 <ControlSlider
@@ -668,6 +691,26 @@ export default function App() {
                 />
 
               </div>
+              {voiceEffect !== 'none' && (
+                <div className="absolute inset-0 bg-white/45 backdrop-blur-[1.5px] flex flex-col items-center justify-center text-center p-4 z-10 rounded-xl border-2 border-dashed border-pink-100">
+                  <div className="p-3 rounded-full bg-pink-100 text-[#ec4899] mb-2.5 shadow-sm animate-pulse">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <h5 className="text-slate-800 font-bold text-xs font-display">当前处于独立【变声相型】模式 🎭</h5>
+                  <p className="text-slate-500 text-[10px] mt-1 px-4 max-w-sm leading-normal">
+                    为了输出高保真、通透的原声伴奏与嗓音共鸣，下方的<b>极度炸麦/失真模块</b>已被自动彻底旁路遮照。
+                  </p>
+                  <button
+                    type="button"
+                    id="btn-switch-bypass-vox"
+                    onClick={() => handleVoiceEffectChange('none')}
+                    className="mt-3 px-4 py-1.5 bg-[#ec4899] hover:bg-[#db2777] text-white text-[11px] font-bold rounded-lg cursor-pointer shadow-xs transition"
+                  >
+                    关掉变声音效 (解锁失真炸麦)
+                  </button>
+                </div>
+              )}
+            </div>
 
               {/* Dynamic Voice Changer Selection Panel */}
               <section className="bg-white border border-pink-100 rounded-xl p-5 shadow-xs" id="voice-changer-profiles-section">
@@ -760,11 +803,6 @@ export default function App() {
                             onChange={handleInputDeviceChange}
                             className="w-full bg-white border border-slate-200 rounded-lg p-2.5 pr-8 text-xs text-slate-800 font-sans cursor-pointer focus:outline-none focus:border-pink-300 appearance-none shadow-xs"
                           >
-                            <optgroup label="✨ 内置演示声音 (Demonstration Loop/Synth)">
-                              <option value="synth-loop">测试律动吉他模拟器 (Synth Rhythm Loop)</option>
-                              <option value="heavy-metal">重载熔火金属电吉他 (Heavy Distortion Rock)</option>
-                              <option value="sine-wave">标准440Hz正弦波校验器 (Sine Wave Lab)</option>
-                            </optgroup>
                             <optgroup label="🎤 物理麦克风与硬件声卡 (System Mic Inputs)">
                               <option value="microphone">系统默认拾音麦克风 (System Default Input)</option>
                               {availableInputs.map((device, index) => (
